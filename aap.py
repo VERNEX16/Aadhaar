@@ -1,104 +1,133 @@
 from flask import Flask, request, jsonify
-import requests, uuid, json, time, os
+import requests
+import sqlite3
+import time
+import random
+import string
 
 app = Flask(__name__)
 
-DB_FILE = "keys.json"
+# 🔗 BACKEND API
+BACKEND_URL = "https://mean-folders-athletic-divide.trycloudflare.com/search/number"
+BACKEND_KEY = "Mauryaji12"
 
-# -------- LOAD / SAVE --------
-def load_db():
-    if not os.path.exists(DB_FILE):
-        return {}
-    with open(DB_FILE, "r") as f:
-        return json.load(f)
+# ---------------- DATABASE ----------------
+def init_db():
+    conn = sqlite3.connect("keys.db")
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS keys (
+            key TEXT PRIMARY KEY,
+            expiry REAL
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-def save_db(db):
-    with open(DB_FILE, "w") as f:
-        json.dump(db, f, indent=4)
+init_db()
 
-# -------- CREATE KEY --------
-def create_key(days):
-    key = "VRX-" + uuid.uuid4().hex[:10]
+# ---------------- KEY SYSTEM ----------------
+def generate_key(days):
+    key = "VERNX-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
+    expiry = time.time() + (days * 86400)
 
-    expiry = None if days == 0 else int(time.time()) + days * 86400
+    conn = sqlite3.connect("keys.db")
+    c = conn.cursor()
+    c.execute("INSERT INTO keys VALUES (?, ?)", (key, expiry))
+    conn.commit()
+    conn.close()
 
-    db = load_db()
-    db[key] = {"expiry": expiry}
-    save_db(db)
+    return key, expiry
 
-    return key
+def is_valid(key):
+    conn = sqlite3.connect("keys.db")
+    c = conn.cursor()
+    c.execute("SELECT expiry FROM keys WHERE key=?", (key,))
+    row = c.fetchone()
+    conn.close()
 
-# -------- CHECK KEY --------
-def check_key(key):
-    db = load_db()
+    if not row:
+        return False
 
-    if key not in db:
-        return False, "Invalid key"
+    return time.time() < row[0]
 
-    expiry = db[key]["expiry"]
-
-    if expiry is None:
-        return True, "Lifetime key"
-
-    if time.time() > expiry:
-        return False, "Key expired"
-
-    return True, "Valid key"
-
-# -------- CLEAN RESPONSE --------
-REMOVE_KEYS = ["owner", "dm", "contact", "telegram", "whatsapp", "message", "by"]
-
+# ---------------- CLEAN FUNCTION ----------------
 def clean_data(data):
+    remove_keys = ["owner", "developer", "branding", "processed_by"]
+
     if isinstance(data, dict):
-        return {k: clean_data(v) for k, v in data.items() if k not in REMOVE_KEYS}
+        return {
+            k: clean_data(v)
+            for k, v in data.items()
+            if k not in remove_keys
+        }
     elif isinstance(data, list):
         return [clean_data(i) for i in data]
+
     return data
 
-# -------- HOME --------
+# ---------------- ROUTES ----------------
+
 @app.route("/")
 def home():
-    return "VERNEX API WITH KEY SYSTEM 🚀"
+    return "VERNX API LIVE 🚀"
 
-# -------- ADMIN: GENERATE KEY --------
-@app.route("/admin/generate")
+# 🔑 GENERATE KEY (ANY DAYS)
+@app.route("/generate")
 def generate():
-    admin = request.args.get("admin")
-    days = int(request.args.get("days", 1))
-
-    if admin != "VERNEX-ADMIN":
-        return jsonify({"status": "error", "message": "Unauthorized"})
-
-    key = create_key(days)
-
-    return jsonify({
-        "status": "success",
-        "key": key,
-        "valid_days": "lifetime" if days == 0 else days
-    })
-
-# -------- API --------
-@app.route("/api/adharfamily")
-def adharfamily():
-    key = request.args.get("key")
-    num = request.args.get("num")
-
-    valid, msg = check_key(key)
-
-    if not valid:
-        return jsonify({"status": "error", "message": msg, "powered_by": "VERNEX"}), 403
+    plan = request.args.get("plan")
 
     try:
-        res = requests.get(
-            "https://ft-osint-api.duckdns.org/api/adharfamily",
-            params={"key": "ft-key-tr-jzynhifn87aq", "num": num},
-            timeout=10
-        )
+        if plan.endswith("d"):
+            days = int(plan[:-1])
+        else:
+            return jsonify({"error": "Use format like 4d, 10d"})
 
-        data = clean_data(res.json())
-        data["powered_by"] = "VERNEX"
+        key, expiry = generate_key(days)
+
+        return jsonify({
+            "key": key,
+            "valid_days": days,
+            "expires_at": expiry
+        })
+
+    except:
+        return jsonify({"error": "Invalid input"})
+
+# 📞 MAIN API
+@app.route("/api/numinfo")
+def numinfo():
+    num = request.args.get("num")
+    key = request.args.get("key")
+
+    if not num:
+        return jsonify({"error": "Number required"})
+
+    if not is_valid(key):
+        return jsonify({"error": "Invalid or expired key"})
+
+    try:
+        # 🔥 CALL BACKEND
+        res = requests.get(BACKEND_URL, params={
+            "key": BACKEND_KEY,
+            "number": num
+        }, timeout=10)
+
+        raw = res.json()
+
+        # 🧹 CLEAN DATA
+        data = clean_data(raw)
+
+        # ✅ ADD YOUR NAME
+        data["owner"] = "VERNX"
 
         return jsonify(data)
 
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({
+            "error": "Backend failed",
+            "details": str(e)
+        })
+
+if __name__ == "__main__":
+    app.run()
