@@ -190,6 +190,6 @@ def home():
         "status": "ONLINE"
     })
 
-# Run server
+# Run Server
 if __name__ == "__main__":
     app.run(debug=True)
