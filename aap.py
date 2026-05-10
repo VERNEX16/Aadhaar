@@ -1,133 +1,195 @@
 from flask import Flask, request, jsonify
 import requests
-import sqlite3
-import time
-import random
-import string
+import json
+import os
+import secrets
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-# 🔗 BACKEND API
-BACKEND_URL = "https://mean-folders-athletic-divide.trycloudflare.com/search/number"
-BACKEND_KEY = "Mauryaji12"
+KEYS_FILE = "keys.json"
 
-# ---------------- DATABASE ----------------
-def init_db():
-    conn = sqlite3.connect("keys.db")
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS keys (
-            key TEXT PRIMARY KEY,
-            expiry REAL
-        )
-    """)
-    conn.commit()
-    conn.close()
+# Create keys.json automatically
+if not os.path.exists(KEYS_FILE):
+    with open(KEYS_FILE, "w") as f:
+        json.dump({}, f)
 
-init_db()
+# Load keys
+def load_keys():
+    with open(KEYS_FILE, "r") as f:
+        return json.load(f)
 
-# ---------------- KEY SYSTEM ----------------
-def generate_key(days):
-    key = "VERNX-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
-    expiry = time.time() + (days * 86400)
+# Save keys
+def save_keys(data):
+    with open(KEYS_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
-    conn = sqlite3.connect("keys.db")
-    c = conn.cursor()
-    c.execute("INSERT INTO keys VALUES (?, ?)", (key, expiry))
-    conn.commit()
-    conn.close()
+# Validate API key
+def validate_key(api_key):
 
-    return key, expiry
+    keys = load_keys()
 
-def is_valid(key):
-    conn = sqlite3.connect("keys.db")
-    c = conn.cursor()
-    c.execute("SELECT expiry FROM keys WHERE key=?", (key,))
-    row = c.fetchone()
-    conn.close()
-
-    if not row:
+    if api_key not in keys:
         return False
 
-    return time.time() < row[0]
+    expiry = datetime.fromisoformat(keys[api_key]["expiry"])
 
-# ---------------- CLEAN FUNCTION ----------------
-def clean_data(data):
-    remove_keys = ["owner", "developer", "branding", "processed_by"]
+    # Remove expired keys
+    if datetime.utcnow() > expiry:
+        del keys[api_key]
+        save_keys(keys)
+        return False
 
-    if isinstance(data, dict):
-        return {
-            k: clean_data(v)
-            for k, v in data.items()
-            if k not in remove_keys
-        }
-    elif isinstance(data, list):
-        return [clean_data(i) for i in data]
+    return True
 
-    return data
+# Generate Key
+@app.route("/generate-key")
+def generate_key():
 
-# ---------------- ROUTES ----------------
+    days = request.args.get("days", default=1, type=int)
 
-@app.route("/")
-def home():
-    return "VERNX API LIVE 🚀"
+    api_key = "vernex-day-" + secrets.token_hex(8)
 
-# 🔑 GENERATE KEY (ANY DAYS)
-@app.route("/generate")
-def generate():
-    plan = request.args.get("plan")
+    expiry = datetime.utcnow() + timedelta(days=days)
 
-    try:
-        if plan.endswith("d"):
-            days = int(plan[:-1])
-        else:
-            return jsonify({"error": "Use format like 4d, 10d"})
+    keys = load_keys()
 
-        key, expiry = generate_key(days)
+    keys[api_key] = {
+        "expiry": expiry.isoformat()
+    }
 
+    save_keys(keys)
+
+    return jsonify({
+        "success": True,
+        "owner": "VERNEX",
+        "developer": "VERNEX",
+        "api_key": api_key,
+        "expires_at": expiry.isoformat(),
+        "valid_days": days
+    })
+
+# Number API
+@app.route("/api/number")
+def number_lookup():
+
+    api_key = request.args.get("key")
+    number = request.args.get("num")
+
+    if not api_key:
         return jsonify({
-            "key": key,
-            "valid_days": days,
-            "expires_at": expiry
+            "success": False,
+            "error": "API Key Required"
         })
 
-    except:
-        return jsonify({"error": "Invalid input"})
+    if not validate_key(api_key):
+        return jsonify({
+            "success": False,
+            "error": "Invalid or Expired API Key"
+        })
 
-# 📞 MAIN API
-@app.route("/api/numinfo")
-def numinfo():
-    num = request.args.get("num")
-    key = request.args.get("key")
-
-    if not num:
-        return jsonify({"error": "Number required"})
-
-    if not is_valid(key):
-        return jsonify({"error": "Invalid or expired key"})
+    if not number:
+        return jsonify({
+            "success": False,
+            "error": "Phone Number Required"
+        })
 
     try:
-        # 🔥 CALL BACKEND
-        res = requests.get(BACKEND_URL, params={
-            "key": BACKEND_KEY,
-            "number": num
-        }, timeout=10)
 
-        raw = res.json()
+        target_url = f"https://ft-osint-api.duckdns.org/api/number?key=ft-rahun2m&num={number}"
 
-        # 🧹 CLEAN DATA
-        data = clean_data(raw)
+        response = requests.get(target_url)
 
-        # ✅ ADD YOUR NAME
-        data["owner"] = "VERNX"
+        data = response.json()
 
-        return jsonify(data)
+        # Remove unwanted branding
+        if isinstance(data, dict):
+
+            data.pop("by", None)
+            data.pop("channel", None)
+            data.pop("cached", None)
+            data.pop("cached_at", None)
+
+        return jsonify({
+            "success": True,
+            "owner": "VERNEX",
+            "developer": "VERNEX",
+            "searched_number": number,
+            "result": data
+        })
 
     except Exception as e:
+
         return jsonify({
-            "error": "Backend failed",
-            "details": str(e)
+            "success": False,
+            "error": str(e)
         })
 
+# Vehicle API
+@app.route("/api/vehicle")
+def vehicle_lookup():
+
+    api_key = request.args.get("key")
+    rc = request.args.get("rc")
+
+    if not api_key:
+        return jsonify({
+            "success": False,
+            "error": "API Key Required"
+        })
+
+    if not validate_key(api_key):
+        return jsonify({
+            "success": False,
+            "error": "Invalid or Expired API Key"
+        })
+
+    if not rc:
+        return jsonify({
+            "success": False,
+            "error": "Vehicle Number Required"
+        })
+
+    try:
+
+        target_url = f"https://vehicle-eight-vert.vercel.app/api?rc={rc}"
+
+        response = requests.get(target_url)
+
+        data = response.json()
+
+        # Remove unwanted branding
+        if isinstance(data, dict):
+
+            data.pop("by", None)
+            data.pop("channel", None)
+            data.pop("cached", None)
+            data.pop("cached_at", None)
+
+        return jsonify({
+            "success": True,
+            "owner": "VERNEX",
+            "developer": "VERNEX",
+            "vehicle_number": rc,
+            "result": data
+        })
+
+    except Exception as e:
+
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        })
+
+# Home Route
+@app.route("/")
+def home():
+    return jsonify({
+        "owner": "VERNEX",
+        "developer": "VERNEX",
+        "status": "ONLINE"
+    })
+
+# Run server
 if __name__ == "__main__":
-    app.run()
+    app.run(debug=True)
